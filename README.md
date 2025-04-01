@@ -2,8 +2,8 @@
 Miscellaneous Linux Scripts
 
 These scripts will update Linux distributions (tested against Ubuntu & CentOS).
----
-## Download
+
+# Download
 
 You can download the latest release from the link below:
 
