@@ -1,127 +1,248 @@
 #!/bin/bash
 
 # =========================
-# Auto Update Manager Script
+# GLOBAL VARIABLES
 # =========================
-
-BACKUP_DIR="./backup_$(date +%F_%H-%M-%S)"
-mkdir -p "$BACKUP_DIR"
-
-CONFIG_FILE_DEB="/etc/apt/apt.conf.d/50unattended-upgrades"
-AUTO_FILE_DEB="/etc/apt/apt.conf.d/20auto-upgrades"
-DNF_CONF="/etc/dnf/automatic.conf"
-
+BACKUP_DIR="./backup"
 OS_TYPE=""
+PKG_MANAGER=""
 
-# -------------------------
-# Detect OS
-# -------------------------
+# =========================
+# DETECT OS
+# =========================
 detect_os() {
     if [ -f /etc/debian_version ]; then
         OS_TYPE="debian"
+        PKG_MANAGER="apt"
     elif [ -f /etc/redhat-release ]; then
         OS_TYPE="rhel"
+        PKG_MANAGER="dnf"
     else
-        echo "Unsupported OS"
-        exit 1
+        OS_TYPE="unknown"
     fi
-    echo "Detected OS: $OS_TYPE"
 }
 
-# -------------------------
-# Backup function
-# -------------------------
+# =========================
+# BACKUP FUNCTION
+# =========================
 backup_file() {
     FILE=$1
+    mkdir -p "$BACKUP_DIR"
+    TS=$(date +"%Y%m%d-%H%M%S")
     if [ -f "$FILE" ]; then
-        cp "$FILE" "$BACKUP_DIR/"
+        cp "$FILE" "$BACKUP_DIR/$(basename $FILE)-$TS.bak"
+        echo "✔ Backup completed: $BACKUP_DIR/$(basename $FILE)-$TS.bak"
     fi
 }
 
-# -------------------------
-# Install packages
-# -------------------------
-install_updates() {
+# =========================
+# INSTALL PACKAGES
+# =========================
+install_updates_pkg() {
     detect_os
+    echo "Detected OS: $OS_TYPE"
 
-    if [ "$OS_TYPE" = "debian" ]; then
-        apt update
-        apt install -y unattended-upgrades
-        dpkg-reconfigure unattended-upgrades
-    elif [ "$OS_TYPE" = "rhel" ]; then
+    if [ "$OS_TYPE" == "debian" ]; then
+        echo "Installing unattended-upgrades (automatic security updates)..."
+        apt update && apt install -y unattended-upgrades
+    elif [ "$OS_TYPE" == "rhel" ]; then
+        echo "Installing dnf-automatic (automatic updates)..."
         dnf install -y dnf-automatic
         systemctl enable --now dnf-automatic.timer
+    else
+        echo "Unsupported OS"
     fi
 }
 
-# -------------------------
-# Configure auto updates
-# -------------------------
+# =========================
+# SET BACKUP LOCATION
+# =========================
+set_backup_location() {
+    echo "Select backup location:"
+    echo "1) Use default (./backup)"
+    echo "2) Use /backup"
+    echo "3) Use /root/backup"
+    echo "4) Enter custom path"
+
+    read -p "Choose an option: " choice
+
+    case $choice in
+        1) BACKUP_DIR="./backup" ;;
+        2) BACKUP_DIR="/backup" ;;
+        3) BACKUP_DIR="/root/backup" ;;
+        4)
+            read -p "Enter custom backup path: " input
+            BACKUP_DIR="$input"
+            ;;
+        *) echo "Invalid option. Using default."; BACKUP_DIR="./backup" ;;
+    esac
+
+    # ✅ Remove trailing slash
+    BACKUP_DIR="${BACKUP_DIR%/}"
+
+    mkdir -p "$BACKUP_DIR"
+
+    echo "✔ Backup directory set to $BACKUP_DIR"
+}
+
+# =========================
+# CONFIGURE UPDATES
+# =========================
 configure_updates() {
     detect_os
+    echo "Configuring automatic SECURITY updates only (no application upgrades)..."
 
-    read -p "Enable automatic reboot? (yes/no): " REBOOT
+    if [ "$OS_TYPE" == "debian" ]; then
+        FILE="/etc/apt/apt.conf.d/50unattended-upgrades"
+        backup_file "$FILE"
 
-    if [ "$OS_TYPE" = "debian" ]; then
-        backup_file "$CONFIG_FILE_DEB"
+        sed -i 's|// "\${distro_id}:\${distro_codename}-updates";||' "$FILE"
+        echo "✔ Security updates configured (Debian)"
 
-        sed -i 's#Unattended-Upgrade::Automatic-Reboot .*#Unattended-Upgrade::Automatic-Reboot "false";#' "$CONFIG_FILE_DEB"
+    elif [ "$OS_TYPE" == "rhel" ]; then
+        FILE="/etc/dnf/automatic.conf"
+        backup_file "$FILE"
 
-        if [ "$REBOOT" = "yes" ]; then
-            read -p "Enter reboot time (HH:MM 24h): " TIME
-
-            sed -i "s#Unattended-Upgrade::Automatic-Reboot.*#Unattended-Upgrade::Automatic-Reboot \"true\";#" "$CONFIG_FILE_DEB"
-
-            grep -q Automatic-Reboot-Time "$CONFIG_FILE_DEB" || \
-            echo "Unattended-Upgrade::Automatic-Reboot-Time \"$TIME\";" >> "$CONFIG_FILE_DEB"
-        fi
-
-        echo 'APT::Periodic::Unattended-Upgrade "1";' > "$AUTO_FILE_DEB"
-        echo 'APT::Periodic::Update-Package-Lists "1";' >> "$AUTO_FILE_DEB"
-
-    elif [ "$OS_TYPE" = "rhel" ]; then
-        backup_file "$DNF_CONF"
-
-        sed -i 's/apply_updates = no/apply_updates = yes/' "$DNF_CONF"
+        sed -i 's/^upgrade_type.*/upgrade_type = security/' "$FILE"
+        echo "✔ Security updates configured (RHEL)"
     fi
-}
 
-# -------------------------
-# Set systemd timer override
-# -------------------------
-set_schedule() {
-    read -p "Enter update time (HH:MM 24h): " TIME
+    echo "Default update time is 06:00 AM"
 
-    systemctl edit apt-daily-upgrade.timer <<EOF
+    read -p "Enter update time (HH:MM 24h) or 'default': " TIME
+
+    if [ "$TIME" != "default" ]; then
+        if [ "$OS_TYPE" == "debian" ]; then
+            mkdir -p /etc/systemd/system/apt-daily-upgrade.timer.d/
+            cat > /etc/systemd/system/apt-daily-upgrade.timer.d/override.conf <<EOF
 [Timer]
 OnCalendar=
 OnCalendar=*-*-* $TIME
 RandomizedDelaySec=0
+Persistent=true
 EOF
+            systemctl daemon-reload
+            systemctl restart apt-daily-upgrade.timer
 
-    systemctl daemon-reexec
-    systemctl restart apt-daily-upgrade.timer
+        elif [ "$OS_TYPE" == "rhel" ]; then
+            mkdir -p /etc/systemd/system/dnf-automatic.timer.d/
+            cat > /etc/systemd/system/dnf-automatic.timer.d/override.conf <<EOF
+[Timer]
+OnCalendar=
+OnCalendar=*-*-* $TIME
+RandomizedDelaySec=0
+Persistent=true
+EOF
+            systemctl daemon-reload
+            systemctl restart dnf-automatic.timer
+        fi
+        echo "✔ Update schedule set to $TIME"
+    else
+        echo "✔ Default schedule retained (06:00 AM)"
+    fi
 
-    echo "Update schedule set to $TIME"
+    read -p "Enable automatic reboot after updates? (yes/no): " REBOOT
+
+    if [ "$OS_TYPE" == "debian" ]; then
+        FILE="/etc/apt/apt.conf.d/50unattended-upgrades"
+        backup_file "$FILE"
+
+        if [[ "$REBOOT" == "yes" ]]; then
+            sed -i 's|//Unattended-Upgrade::Automatic-Reboot "false";|Unattended-Upgrade::Automatic-Reboot "true";|' "$FILE"
+            echo "✔ Auto reboot ENABLED"
+        else
+            sed -i 's|Unattended-Upgrade::Automatic-Reboot "true";|Unattended-Upgrade::Automatic-Reboot "false";|' "$FILE"
+            echo "✔ Auto reboot DISABLED"
+        fi
+
+    elif [ "$OS_TYPE" == "rhel" ]; then
+        FILE="/etc/dnf/automatic.conf"
+        backup_file "$FILE"
+
+        if [[ "$REBOOT" == "yes" ]]; then
+            sed -i 's/^reboot.*/reboot = when-needed/' "$FILE"
+            echo "✔ Auto reboot ENABLED"
+        else
+            sed -i 's/^reboot.*/reboot = never/' "$FILE"
+            echo "✔ Auto reboot DISABLED"
+        fi
+    fi
+
+    echo "✔ Automatic update configuration completed successfully"
 }
 
-# -------------------------
-# Create weekly reboot
-# -------------------------
-create_weekly_reboot() {
-    read -p "Enter day (e.g., Sat): " DAY
+# =========================
+# ENABLE/DISABLE UPDATES
+# =========================
+toggle_updates() {
+    echo "1) Disable Automatic Updates"
+    echo "2) Enable Automatic Updates"
+    read -p "Choose: " choice
+
+    detect_os
+
+    if [ "$choice" == "1" ]; then
+        if [ "$OS_TYPE" == "debian" ]; then
+            sed -i 's/"1"/"0"/g' /etc/apt/apt.conf.d/20auto-upgrades
+            systemctl restart apt-daily-upgrade.timer
+        else
+            systemctl disable --now dnf-automatic.timer
+        fi
+        echo "✔ Automatic updates DISABLED"
+
+    elif [ "$choice" == "2" ]; then
+        if [ "$OS_TYPE" == "debian" ]; then
+            sed -i 's/"0"/"1"/g' /etc/apt/apt.conf.d/20auto-upgrades
+            systemctl restart apt-daily-upgrade.timer
+        else
+            systemctl enable --now dnf-automatic.timer
+        fi
+        echo "✔ Automatic updates ENABLED"
+    fi
+}
+
+# =========================
+# CUSTOM REBOOT SERVICE
+# =========================
+create_reboot_service() {
+    detect_os
+
+    echo "This will create a custom reboot schedule (only if reboot is required)."
+    echo "Reboot happens ONLY if system requires it."
+
+    read -p "Enter day (Mon, Tue, Wed, Thu, Fri, Sat, Sun): " DAY
     read -p "Enter time (HH:MM 24h): " TIME
 
-    cat <<EOF > /etc/systemd/system/weekly-reboot.service
+    # ✅ Create external reboot script (no quoting issues)
+    cat > /usr/local/bin/reboot-if-required.sh <<'EOF'
+#!/bin/bash
+
+if [ -f /var/run/reboot-required ]; then
+    /sbin/shutdown -r now
+elif command -v rpm >/dev/null 2>&1; then
+    if [ "$(uname -r)" != "$(rpm -q kernel | tail -1 | sed 's/kernel-//')" ]; then
+        /sbin/shutdown -r now
+    fi
+fi
+EOF
+
+    chmod +x /usr/local/bin/reboot-if-required.sh
+
+    # 🔁 Stop and disable existing timer (if any)
+    systemctl disable --now weekly-reboot.timer 2>/dev/null
+    
+    # ✅ Service (simple, clean)
+    cat > /etc/systemd/system/weekly-reboot.service <<EOF
 [Unit]
 Description=Weekly Reboot if Required
 
 [Service]
 Type=oneshot
-ExecStart=/bin/bash -c '[ -f /var/run/reboot-required ] && /sbin/reboot'
+ExecStart=/usr/local/bin/reboot-if-required.sh
 EOF
 
-    cat <<EOF > /etc/systemd/system/weekly-reboot.timer
+    # ✅ Timer
+    cat > /etc/systemd/system/weekly-reboot.timer <<EOF
 [Unit]
 Description=Weekly Reboot Timer
 
@@ -136,64 +257,133 @@ EOF
     systemctl daemon-reload
     systemctl enable --now weekly-reboot.timer
 
-    echo "Weekly reboot scheduled on $DAY at $TIME"
+    echo "✔ Custom reboot service created successfully"
+    echo "✔ Schedule: $DAY at $TIME"
 }
 
-# -------------------------
-# Disable auto updates
-# -------------------------
-disable_updates() {
-    detect_os
-
-    if [ "$OS_TYPE" = "debian" ]; then
-        backup_file "$AUTO_FILE_DEB"
-        echo 'APT::Periodic::Unattended-Upgrade "0";' > "$AUTO_FILE_DEB"
-    elif [ "$OS_TYPE" = "rhel" ]; then
-        systemctl disable --now dnf-automatic.timer
-    fi
-
-    read -p "Create custom reboot schedule? (yes/no): " CHOICE
-    if [ "$CHOICE" = "yes" ]; then
-        create_weekly_reboot
-    fi
-}
-
-# -------------------------
-# View logs
-# -------------------------
+# =========================
+# VIEW LOGS
+# =========================
 view_logs() {
     detect_os
-
-    if [ "$OS_TYPE" = "debian" ]; then
-        tail -n 30 /var/log/unattended-upgrades/unattended-upgrades.log
-    elif [ "$OS_TYPE" = "rhel" ]; then
-        journalctl -u dnf-automatic --no-pager | tail -n 30
+    if [ "$OS_TYPE" == "debian" ]; then
+        tail -30 /var/log/unattended-upgrades/unattended-upgrades.log
+    else
+        journalctl -u dnf-automatic --no-pager | tail -30
     fi
 }
 
-# -------------------------
-# Menu
-# -------------------------
+# =========================
+# SERVICE STATUS
+# =========================
+check_services() {
+    echo "1) Update service status"
+    echo "2) Custom reboot service status"
+    read -p "Choose: " c
+
+    detect_os
+
+    if [ "$c" == "1" ]; then
+        if [ "$OS_TYPE" == "debian" ]; then
+            systemctl status apt-daily-upgrade.timer
+        else
+            systemctl status dnf-automatic.timer
+        fi
+    else
+        systemctl status weekly-reboot.timer
+    fi
+}
+
+# =========================
+# RESTART SERVICES
+# =========================
+restart_services() {
+    echo "1) Restart update service"
+    echo "2) Restart reboot service"
+    read -p "Choose: " c
+
+    detect_os
+
+    if [ "$c" == "1" ]; then
+        if [ "$OS_TYPE" == "debian" ]; then
+            systemctl restart apt-daily-upgrade.timer
+        else
+            systemctl restart dnf-automatic.timer
+        fi
+    else
+        systemctl restart weekly-reboot.timer
+    fi
+
+    echo "✔ Service restarted"
+}
+
+# =========================
+# SYSTEM HEALTH SUMMARY
+# =========================
+health_summary() {
+    detect_os
+
+    echo "===== System Health Summary ====="
+
+    if [ "$OS_TYPE" == "debian" ]; then
+        UPDATES=$(apt list --upgradable 2>/dev/null | wc -l)
+    else
+        UPDATES=$(dnf check-update 2>/dev/null | wc -l)
+    fi
+
+    if [ "$OS_TYPE" == "rhel" ]; then
+        SEC=$(dnf updateinfo list security 2>/dev/null | wc -l)
+    else
+        SEC="N/A"
+    fi
+
+    REBOOT="NO"
+    if [ -f /var/run/reboot-required ]; then
+        REBOOT="YES"
+    elif command -v rpm >/dev/null 2>&1; then
+        if [ "$(uname -r)" != "$(rpm -q kernel | tail -1 | sed 's/kernel-//')" ]; then
+            REBOOT="YES"
+        fi
+    fi
+
+    echo "Pending updates: $UPDATES"
+    echo "Security updates: $SEC"
+    echo "Reboot required: $REBOOT"
+}
+
+# =========================
+# MAIN MENU
+# =========================
 while true; do
     echo ""
     echo "===== Auto Update Manager ====="
-    echo "1) Install Auto Update Package"
-    echo "2) Configure Auto Updates"
-    echo "3) Set Update Schedule"
-    echo "4) Disable Auto Updates + Optional Reboot Timer"
-    echo "5) View Logs"
-    echo "6) Exit"
+    echo "0) Detect OS Type"
+    echo "1) Install Automatic Update Package"
+    echo "2) Set Backup Location"
+    echo "3) Configure Automatic Updates"
+    echo "4) Disable/Enable Automatic Updates"
+    echo "5) Create Custom Reboot Service"
+    echo "6) View Logs"
+    echo "7) Check Services Status"
+    echo "8) Restart Services"
+    echo "9) System Health Summary"
+    echo "10) Exit"
     echo "================================"
 
-    read -p "Choose an option: " OPTION
+    read -p "Choose an option: " opt
 
-    case $OPTION in
-        1) install_updates ;;
-        2) configure_updates ;;
-        3) set_schedule ;;
-        4) disable_updates ;;
-        5) view_logs ;;
-        6) exit 0 ;;
+    case $opt in
+        0) detect_os; echo "OS: $OS_TYPE"; uname -r ;;
+        1) install_updates_pkg ;;
+        2) set_backup_location ;;
+        3) configure_updates ;;
+        4) toggle_updates ;;
+        5) create_reboot_service ;;
+        6) view_logs ;;
+        7) check_services ;;
+        8) restart_services ;;
+        9) health_summary ;;
+        10) exit ;;
         *) echo "Invalid option" ;;
     esac
 done
