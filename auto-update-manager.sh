@@ -1,5 +1,7 @@
 #!/bin/bash
 
+# Version 1.9
+
 # =========================
 # GLOBAL VARIABLES
 # =========================
@@ -106,8 +108,22 @@ configure_updates() {
         FILE="/etc/dnf/automatic.conf"
         backup_file "$FILE"
 
-        sed -i 's/^upgrade_type.*/upgrade_type = security/' "$FILE"
-        echo "✔ Security updates configured (RHEL)"
+        # upgrade_type
+        grep -q '^upgrade_type' "$FILE" \
+            && sed -i 's/^upgrade_type.*/upgrade_type = security/' "$FILE" \
+            || echo "upgrade_type = security" >> "$FILE"
+
+        # apply_updates
+        grep -q '^apply_updates' "$FILE" \
+            && sed -i 's/^apply_updates.*/apply_updates = yes/' "$FILE" \
+            || echo "apply_updates = yes" >> "$FILE"
+
+        # download_updates
+        grep -q '^download_updates' "$FILE" \
+            && sed -i 's/^download_updates.*/download_updates = yes/' "$FILE" \
+            || echo "download_updates = yes" >> "$FILE"
+
+        echo "✔ Security updates (download + apply) configured (RHEL)"
     fi
 
     echo "Default update time is 06:00 AM"
@@ -120,7 +136,7 @@ configure_updates() {
             cat > /etc/systemd/system/apt-daily-upgrade.timer.d/override.conf <<EOF
 [Timer]
 OnCalendar=
-OnCalendar=*-*-* $TIME
+OnCalendar=*-*-* $TIME:00
 RandomizedDelaySec=0
 Persistent=true
 EOF
@@ -134,7 +150,7 @@ EOF
             cat > /etc/systemd/system/dnf-automatic.timer.d/override.conf <<EOF
 [Timer]
 OnCalendar=
-OnCalendar=*-*-* $TIME
+OnCalendar=*-*-* $TIME:00
 RandomizedDelaySec=0
 Persistent=true
 EOF
@@ -166,11 +182,14 @@ EOF
         FILE="/etc/dnf/automatic.conf"
         backup_file "$FILE"
 
+        # reboot setting
+        grep -q '^reboot' "$FILE" \
+            && sed -i 's/^reboot.*/reboot = '"$([ "$REBOOT" == "yes" ] && echo "when-needed" || echo "never")"'/' "$FILE" \
+            || echo "reboot = $([ "$REBOOT" == "yes" ] && echo "when-needed" || echo "never")" >> "$FILE"
+
         if [[ "$REBOOT" == "yes" ]]; then
-            sed -i 's/^reboot.*/reboot = when-needed/' "$FILE"
             echo "✔ Auto reboot ENABLED"
         else
-            sed -i 's/^reboot.*/reboot = never/' "$FILE"
             echo "✔ Auto reboot DISABLED"
         fi
     fi
@@ -331,7 +350,7 @@ health_summary() {
         SEC=$(apt list --upgradable 2>/dev/null | grep "security" | wc -l)
     else
         UPDATES=$(dnf check-update 2>/dev/null | grep -E '^[a-zA-Z0-9]' | wc -l)
-        SEC=$(dnf updateinfo list security 2>/dev/null | grep -v "Last " | wc -l)
+        SEC=$(dnf -q updateinfo list security --disableplugin=subscription-manager | wc -l)
     fi
 
     REBOOT="NO"
