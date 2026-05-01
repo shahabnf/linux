@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Version 2.0
+# Version 2.4
 
 # =========================
 # GLOBAL VARIABLES
@@ -101,7 +101,16 @@ configure_updates() {
         FILE="/etc/apt/apt.conf.d/50unattended-upgrades"
         backup_file "$FILE"
 
-        sed -i 's|// "\${distro_id}:\${distro_codename}-updates";||' "$FILE"
+        # ❌ Comment NON-security sources
+        # sed -i 's|^[[:blank:]]*"\(.*${distro_codename}-updates.*\)";|//\t"\1";|' "$FILE"
+        sed -i 's|^[[:blank:]]*"\(.*${distro_codename}\)";|//\t"\1";|' "$FILE"
+        sed -i 's|^[[:blank:]]*"\(.*${distro_codename}-updates\)";|//\t"\1";|' "$FILE"
+        sed -i 's|^[[:blank:]]*"\(.*codename=${distro_codename},label=Debian"\);|//\t"\1;|' "$FILE"
+
+        # ✅ Ensure security sources are UNCOMMENTED
+        sed -i 's|^//[[:blank:]]*"\(.*label=Debian-Security.*\)";|\t"\1";|' "$FILE"
+        sed -i 's|^//[[:blank:]]*"\(.*${distro_codename}-security\)";|\t"\1";|' "$FILE"
+
         echo "✔ Security updates configured (Debian)"
 
     elif [ "$OS_TYPE" == "rhel" ]; then
