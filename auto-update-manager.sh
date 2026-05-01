@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Version 1.9
+# Version 2.4
 
 # =========================
 # GLOBAL VARIABLES
@@ -101,7 +101,16 @@ configure_updates() {
         FILE="/etc/apt/apt.conf.d/50unattended-upgrades"
         backup_file "$FILE"
 
-        sed -i 's|// "\${distro_id}:\${distro_codename}-updates";||' "$FILE"
+        # ❌ Comment NON-security sources
+        # sed -i 's|^[[:blank:]]*"\(.*${distro_codename}-updates.*\)";|//\t"\1";|' "$FILE"
+        sed -i 's|^[[:blank:]]*"\(.*${distro_codename}\)";|//\t"\1";|' "$FILE"
+        sed -i 's|^[[:blank:]]*"\(.*${distro_codename}-updates\)";|//\t"\1";|' "$FILE"
+        sed -i 's|^[[:blank:]]*"\(.*codename=${distro_codename},label=Debian"\);|//\t"\1;|' "$FILE"
+
+        # ✅ Ensure security sources are UNCOMMENTED
+        sed -i 's|^//[[:blank:]]*"\(.*label=Debian-Security.*\)";|\t"\1";|' "$FILE"
+        sed -i 's|^//[[:blank:]]*"\(.*${distro_codename}-security\)";|\t"\1";|' "$FILE"
+
         echo "✔ Security updates configured (Debian)"
 
     elif [ "$OS_TYPE" == "rhel" ]; then
@@ -368,6 +377,23 @@ health_summary() {
 }
 
 # =========================
+# SET TIMEZONE (America/Edmonton)
+# =========================
+set_timezone_edmonton() {
+    echo "This will set the system timezone to America/Edmonton."
+
+    read -p "Proceed? (yes/no): " confirm
+
+    if [[ "$confirm" == "yes" ]]; then
+        timedatectl set-timezone America/Edmonton
+        echo "✔ Timezone set to America/Edmonton"
+        timedatectl
+    else
+        echo "Operation cancelled."
+    fi
+}
+
+# =========================
 # MAIN MENU
 # =========================
 while true; do
@@ -383,7 +409,8 @@ while true; do
     echo "7) Check Services Status"
     echo "8) Restart Services"
     echo "9) System Health Summary"
-    echo "10) Exit"
+    echo "10) Set Timezone to America/Edmonton"
+    echo "11) Exit"
     echo "================================"
 
     read -p "Choose an option: " opt
@@ -399,7 +426,8 @@ while true; do
         7) check_services ;;
         8) restart_services ;;
         9) health_summary ;;
-        10) exit ;;
+        10) set_timezone_edmonton ;;
+        11) exit ;;
         *) echo "Invalid option" ;;
     esac
 done
